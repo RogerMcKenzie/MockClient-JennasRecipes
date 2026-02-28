@@ -1,5 +1,6 @@
 import { Card, CardMedia, CardContent, Typography, Button, CardActions } from '@mui/material';
 import VisibilityIcon from '@mui/icons-material/Visibility';
+import { hasSpoonacularApiKey, spoonacularApiKey } from '../config/env';
 
 interface RecipeCardProps {
     title: string;
@@ -7,14 +8,29 @@ interface RecipeCardProps {
     id: number;
 }
 
-const API_KEY = import.meta.env.VITE_SPOONACULAR_KEY;
+const hasSpoonacularKey = hasSpoonacularApiKey;
 
 export default function RecipeCard({ title, image, id }: RecipeCardProps) {
     const handleView = async () => {
+        if (!hasSpoonacularKey || !spoonacularApiKey) {
+            console.warn('Spoonacular API key not set. Cannot open recipe details.');
+            return;
+        }
+
         try {
             const response = await fetch(
-                `https://api.spoonacular.com/recipes/${id}/information?apiKey=${API_KEY}`
+                `https://api.spoonacular.com/recipes/${id}/information?apiKey=${spoonacularApiKey}`
             );
+
+            if (!response.ok) {
+                const errorPayload = await response.json().catch(() => null);
+                const apiMessage =
+                    errorPayload && typeof errorPayload.message === 'string'
+                        ? errorPayload.message
+                        : `Spoonacular details request failed (${response.status}).`;
+                throw new Error(apiMessage);
+            }
+
             const data = await response.json();
             if (data.sourceUrl) {
                 window.open(data.sourceUrl, '_blank');
@@ -56,6 +72,7 @@ export default function RecipeCard({ title, image, id }: RecipeCardProps) {
                     size="small"
                     startIcon={<VisibilityIcon />}
                     onClick={handleView}
+                    disabled={!hasSpoonacularKey}
                 >
                     View Recipe
                 </Button>

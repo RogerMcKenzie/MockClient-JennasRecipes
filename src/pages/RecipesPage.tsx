@@ -17,10 +17,11 @@ import FlipCard from '../components/FlipCard';
 import AIRecipeCard from '../components/AIRecipeCard';
 import RecipeCard from '../components/RecipeCard';
 import { favorites } from '../data/favorites';
-import { generateRecipe } from '../services/aiService';
+import { generateRecipe, hasGeminiApiKey } from '../services/aiService';
+import { hasSpoonacularApiKey, spoonacularApiKey } from '../config/env';
 import type { AIRecipe } from '../services/aiService';
 
-const SPOONACULAR_KEY = import.meta.env.VITE_SPOONACULAR_KEY;
+const hasSpoonacularKey = hasSpoonacularApiKey;
 
 interface RecipeResult {
     id: number;
@@ -34,6 +35,8 @@ export default function RecipesPage() {
     const [recipes, setRecipes] = useState<RecipeResult[]>([]);
     const [aiLoading, setAiLoading] = useState(false);
     const [webLoading, setWebLoading] = useState(false);
+    const [aiError, setAiError] = useState<string | null>(null);
+    const [webError, setWebError] = useState<string | null>(null);
     const [searched, setSearched] = useState(false);
 
     const handleGenerate = async () => {
@@ -45,28 +48,78 @@ export default function RecipesPage() {
         setWebLoading(true);
         setAiRecipe(null);
         setRecipes([]);
+        setAiError(null);
+        setWebError(null);
 
         const parts = trimmed.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
 
         // Fire both AI and Spoonacular in parallel
         const aiPromise = generateRecipe(parts)
-            .then((recipe) => setAiRecipe(recipe))
+            .then((recipe) => {
+                setAiRecipe(recipe);
+                if (!recipe) {
+                    setAiError(
+                        hasGeminiApiKey
+                            ? 'AI recipe generation failed. Please try again with different ingredients.'
+                            : 'Set up a Gemini API key (VITE_GEMINI_API_KEY) in .env or Vercel, then redeploy to enable AI recipe generation.'
+                    );
+                }
+            })
             .catch((err) => {
                 console.error('AI generation failed:', err);
                 setAiRecipe(null);
+
+                if (!hasGeminiApiKey) {
+                    setAiError('Set up a Gemini API key (VITE_GEMINI_API_KEY) in .env or Vercel, then redeploy to enable AI recipe generation.');
+                    return;
+                }
+
+                setAiError(
+                    err instanceof Error && err.message
+                        ? err.message
+                        : 'AI recipe generation failed. Please try again with different ingredients.'
+                );
             })
             .finally(() => setAiLoading(false));
 
-        const webPromise = fetch(
-            `https://api.spoonacular.com/recipes/complexSearch?apiKey=${SPOONACULAR_KEY}&query=${encodeURIComponent(trimmed)}`
-        )
-            .then((res) => res.json())
-            .then((data) => setRecipes(data.results || []))
-            .catch((err) => {
-                console.error('Spoonacular fetch failed:', err);
-                setRecipes([]);
-            })
-            .finally(() => setWebLoading(false));
+        const webPromise = !hasSpoonacularKey
+            ? Promise.resolve()
+                  .then(() => {
+                      setRecipes([]);
+                      setWebError('Set up a Spoonacular API key (VITE_SPOONACULAR_KEY) in .env or Vercel, then redeploy to enable web recipe search.');
+                  })
+                  .finally(() => setWebLoading(false))
+            : fetch(
+                  `https://api.spoonacular.com/recipes/complexSearch?apiKey=${spoonacularApiKey}&query=${encodeURIComponent(trimmed)}`
+              )
+                  .then(async (res) => {
+                      if (!res.ok) {
+                          const errorPayload = await res.json().catch(() => null);
+                          const apiMessage =
+                              errorPayload && typeof errorPayload.message === 'string'
+                                  ? errorPayload.message
+                                  : null;
+                          throw new Error(apiMessage ?? `Spoonacular request failed (${res.status}).`);
+                      }
+                      return res.json();
+                  })
+                  .then((data) => {
+                      const nextRecipes = Array.isArray(data.results) ? data.results : [];
+                      setRecipes(nextRecipes);
+                      if (nextRecipes.length === 0) {
+                          setWebError('No additional recipes found.');
+                      }
+                  })
+                  .catch((err) => {
+                      console.error('Spoonacular fetch failed:', err);
+                      setRecipes([]);
+                      setWebError(
+                          err instanceof Error
+                              ? err.message
+                              : 'Unable to fetch additional recipes right now. Please try again.'
+                      );
+                  })
+                  .finally(() => setWebLoading(false));
 
         await Promise.all([aiPromise, webPromise]);
     };
@@ -194,9 +247,7 @@ export default function RecipesPage() {
                                         borderRadius: 3,
                                     }}
                                 >
-                                    {import.meta.env.VITE_GEMINI_API_KEY
-                                        ? 'AI recipe generation failed. Please try again with different ingredients.'
-                                        : 'Set up a Gemini API key in .env to enable AI recipe generation.'}
+                                    {aiError ?? 'AI recipe generation failed. Please try again with different ingredients.'}
                                 </Typography>
                             )}
 
@@ -227,7 +278,7 @@ export default function RecipesPage() {
                                 </Grid>
                             ) : (
                                 <Typography textAlign="center" color="text.secondary">
-                                    No additional recipes found.
+                                    {webError ?? 'No additional recipes found.'}
                                 </Typography>
                             )}
                         </Box>
